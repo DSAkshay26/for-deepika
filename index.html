@@ -246,6 +246,15 @@ label.btn,label.ghost{display:inline-block}
 .fam-faces{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}
 .fam-faces img{width:68px;height:68px;border-radius:50%;object-fit:cover;box-shadow:0 0 0 2px var(--gold)}
 
+/* film */
+.film{position:fixed;inset:0;z-index:12;background:rgba(5,4,18,.94);display:flex;justify-content:center;overflow-y:auto;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  padding-block:calc(env(safe-area-inset-top,0px) + 20px) calc(env(safe-area-inset-bottom,0px) + 20px)}
+.film-in{margin-block:auto;display:flex;flex-direction:column;align-items:center;gap:12px;width:100%;max-width:420px;text-align:center}
+#filmCanvas,#filmVideo{display:block;height:min(64vh,680px);width:auto;max-width:100%;aspect-ratio:9/16;border-radius:14px;background:#000;box-shadow:0 20px 60px rgba(0,0,0,.7),0 0 0 1px rgba(228,184,98,.4)}
+.film-bar{width:min(100%,300px);height:4px;border-radius:4px;background:rgba(189,177,220,.25);overflow:hidden}
+#filmProg{height:100%;width:0;background:linear-gradient(90deg,var(--marigold),var(--sindoor))}
+
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important}
   #moon,.cloud,.scene,.mem,.env-in{transition-duration:.4s!important}
@@ -462,7 +471,8 @@ label.btn,label.ghost{display:inline-block}
     <h2>Happy Karwa Chauth, <em class="nm">Deepika</em></h2>
     <p class="lede" id="final-line"></p>
     <div class="row">
-      <button class="btn" id="b-petals" type="button">More petals</button>
+      <button class="btn" id="b-film" type="button">Make our film</button>
+      <button class="ghost" id="b-petals" type="button">More petals</button>
       <button class="ghost" id="b-again" type="button">Watch again</button>
     </div>
   </div>
@@ -470,6 +480,21 @@ label.btn,label.ghost{display:inline-block}
 
 <canvas id="fx"></canvas>
 <div id="flash"></div>
+
+<div class="film" id="film" hidden role="dialog" aria-label="Our film">
+  <div class="film-in">
+    <canvas id="filmCanvas" width="720" height="1280"></canvas>
+    <video id="filmVideo" playsinline controls hidden></video>
+    <div class="film-bar"><div id="filmProg"></div></div>
+    <p class="lede" id="filmMsg"></p>
+    <div class="row" id="filmActions" hidden>
+      <button class="btn" id="b-film-share" type="button">Send it to me</button>
+      <button class="ghost" id="b-film-save" type="button">Save video</button>
+      <button class="ghost" id="b-film-again" type="button">Make it again</button>
+      <button class="ghost" id="b-film-close" type="button">Close</button>
+    </div>
+  </div>
+</div>
 
 <script>
 /* ---- personalise here ---- */
@@ -530,11 +555,13 @@ if(MOON || PHOTOS.length){ const im = new Image(); im.src = MOON || PHOTOS[0]; i
 else { mp.innerHTML = `<div class="nophoto">Me, looking back at you</div>`; }
 
 /* ---- sound: tanpura drone and temple bells, all made in WebAudio ---- */
-let ac = null, master = null, soundOn = true, droneTimer = null;
+let ac = null, master = null, speaker = null, recDest = null, soundOn = true, droneTimer = null;
 function audio(){
   if(!ac){
     ac = new (window.AudioContext || window.webkitAudioContext)();
-    master = ac.createGain(); master.gain.value = soundOn ? 1 : 0; master.connect(ac.destination);
+    master = ac.createGain(); speaker = ac.createGain(); speaker.gain.value = soundOn ? 1 : 0;
+    master.connect(speaker).connect(ac.destination);
+    try{ recDest = ac.createMediaStreamDestination(); master.connect(recDest); }catch(e){ recDest = null; }
   }
   if(ac.state === "suspended") ac.resume();
   return ac;
@@ -571,7 +598,7 @@ $("#sound").addEventListener("click", e => {
   soundOn = !soundOn;
   e.currentTarget.textContent = soundOn ? "Sound on" : "Sound off";
   e.currentTarget.setAttribute("aria-pressed", soundOn);
-  if(master) master.gain.setTargetAtTime(soundOn ? 1 : 0, ac.currentTime, .1);
+  if(speaker) speaker.gain.setTargetAtTime(soundOn ? 1 : 0, ac.currentTime, .1);
 });
 document.addEventListener("visibilitychange", () => { if(!ac) return; document.hidden ? ac.suspend() : ac.resume(); });
 
@@ -1259,6 +1286,272 @@ $("#b-fam-all").addEventListener("click", () => {
 });
 $("#b-fam-done").addEventListener("click", () => go("s-final"));
 
+/* 13. the film: replays the evening on a canvas and records it, with the drone and bells, as a video she can keep */
+let filmBlob = null, filmURL = null, filmBusy = false;
+const clamp = v => Math.max(0, Math.min(1, v));
+const easeOut = v => 1 - Math.pow(1 - clamp(v), 3);
+const FW = 720, FH = 1280;
+const FSTARS = Array.from({length: 190}, () => ({x: Math.random() * FW, y: Math.random() * FH * .85, r: Math.random() * 1.6 + .3, p: Math.random() * 6.28, s: .5 + Math.random() * 1.5}));
+const FPETALS = Array.from({length: 70}, () => ({x: Math.random() * FW, off: -Math.random() * 1400, v: .7 + Math.random() * .9, ph: Math.random() * 6.28, s: 8 + Math.random() * 7, c: PETAL_COLORS[Math.random() * PETAL_COLORS.length | 0]}));
+function drawCover(x, img, dx, dy, dw, dh, zoom = 1){
+  const iw = img.naturalWidth, ih = img.naturalHeight, s = Math.max(dw / iw, dh / ih) * zoom;
+  const sw = dw / s, sh = dh / s;
+  x.drawImage(img, (iw - sw) / 2, (ih - sh) / 2, sw, sh, dx, dy, dw, dh);
+}
+function circleImg(x, img, cx, cy, r, zoom = 1){
+  x.save(); x.shadowColor = "rgba(247,239,217,.5)"; x.shadowBlur = 60; x.fillStyle = "#f7efd9";
+  x.beginPath(); x.arc(cx, cy, r, 0, 6.28); x.fill(); x.restore();
+  x.save(); x.beginPath(); x.arc(cx, cy, r, 0, 6.28); x.clip(); drawCover(x, img, cx - r, cy - r, 2 * r, 2 * r, zoom); x.restore();
+  x.lineWidth = 7; x.strokeStyle = "#e4b862"; x.beginPath(); x.arc(cx, cy, r + 4, 0, 6.28); x.stroke();
+}
+function skyAt(k){
+  let i = 0; while(i < SKY.length - 2 && k > SKY[i + 1][0]) i++;
+  const [a0, ta, ba] = SKY[i], [a1, tb, bb] = SKY[i + 1], m = clamp((k - a0) / (a1 - a0));
+  return [mix(ta, tb, m), mix(ba, bb, m)];
+}
+function shadowText(x, on){ x.shadowColor = on ? "rgba(0,0,0,.6)" : "transparent"; x.shadowBlur = on ? 18 : 0; }
+const FILM = {
+  title(x, u){
+    const y = -u * 8;
+    x.fillStyle = "#e4b862"; fitText(x, "करवा चौथ", FW / 2, 520 + y, 96, '"Rozha One", Georgia, serif', 640);
+    x.fillStyle = "#bdb1dc"; x.font = '28px "Marcellus", Georgia, serif'; x.fillText("2 9   O C T O B E R   2 0 2 6", FW / 2, 585 + y);
+    x.save(); x.globalAlpha *= clamp(u - .9);
+    x.fillStyle = "#f5a623"; fitText(x, `${NAME} & ${FROM}`, FW / 2, 710 + y, 64, '"Kalam", cursive', 640, "700");
+    x.restore();
+  },
+  day(x, u, d){
+    const k = clamp(u / d), [top, bot] = skyAt(k), g = x.createLinearGradient(0, 0, 0, FH);
+    g.addColorStop(0, top); g.addColorStop(1, bot); x.fillStyle = g; x.fillRect(0, 0, FW, FH);
+    const sx = FW * (.12 + .76 * k), sy = 600 - Math.sin(Math.PI * Math.min(k, .9) / .9) * 330 + Math.max(0, k - .85) * 900;
+    x.save(); x.globalAlpha *= k < .85 ? 1 : clamp(1 - (k - .85) / .13);
+    const sg = x.createRadialGradient(sx, sy, 0, sx, sy, 150);
+    sg.addColorStop(0, "rgba(255,220,120,.6)"); sg.addColorStop(1, "rgba(255,200,80,0)");
+    x.fillStyle = sg; x.fillRect(sx - 150, sy - 150, 300, 300);
+    const sc = x.createRadialGradient(sx - 12, sy - 12, 4, sx, sy, 52);
+    sc.addColorStop(0, "#fffbe6"); sc.addColorStop(.55, "#ffd04a"); sc.addColorStop(1, "#ff8a1f");
+    x.fillStyle = sc; x.beginPath(); x.arc(sx, sy, 52, 0, 6.28); x.fill(); x.restore();
+    let s = 0; DAY.forEach((dd, j) => { if(k >= dd.at) s = j; });
+    shadowText(x, true);
+    x.fillStyle = "#f5a623"; x.font = '44px "Rozha One", Georgia, serif'; x.fillText(DAY[s].time + " · " + DAY[s].title, FW / 2, 900);
+    x.fillStyle = "#ffffff"; fitText(x, "From sargi to moonrise,", FW / 2, 990, 56, '"Rozha One", Georgia, serif', 640);
+    fitText(x, "you waited all day.", FW / 2, 1060, 56, '"Rozha One", Georgia, serif', 640);
+    shadowText(x, false);
+  },
+  moon(x, u, d, A){
+    const r = 210, cy = 500 + (1 - easeOut(u / 1.6)) * 140;
+    x.save(); x.shadowColor = "rgba(247,239,217,.55)"; x.shadowBlur = 90;
+    const mg = x.createRadialGradient(FW / 2 - 60, cy - 70, 10, FW / 2, cy, r);
+    mg.addColorStop(0, "#fffbf2"); mg.addColorStop(.5, "#f7efd9"); mg.addColorStop(1, "#d8c9a4");
+    x.fillStyle = mg; x.beginPath(); x.arc(FW / 2, cy, r, 0, 6.28); x.fill(); x.restore();
+    x.fillStyle = "rgba(196,180,142,.4)";
+    [[-60,-50,26],[50,40,38],[20,-90,16],[-40,80,18]].forEach(([dx, dy, cr]) => { x.beginPath(); x.arc(FW / 2 + dx, cy + dy, cr, 0, 6.28); x.fill(); });
+    const p = clamp((u - 2.2) / 1.2);
+    if(p > 0){ x.save(); x.globalAlpha *= p; x.beginPath(); x.arc(FW / 2, cy, r, 0, 6.28); x.clip(); drawCover(x, A.him, FW / 2 - r, cy - r, 2 * r, 2 * r, 1 + .04 * p); x.restore(); }
+    const c = clamp((u - 1) / .8);
+    if(c > 0){
+      const R = r * 1.28;
+      x.save(); x.globalAlpha *= c;
+      x.save(); x.beginPath(); x.arc(FW / 2, cy, R, 0, 6.28); x.clip();
+      x.strokeStyle = "rgba(228,184,98,.55)"; x.lineWidth = 2;
+      for(let k = -2 * R; k < 2 * R; k += 18){
+        x.beginPath(); x.moveTo(FW / 2 + k - R, cy - R); x.lineTo(FW / 2 + k + R, cy + R); x.stroke();
+        x.beginPath(); x.moveTo(FW / 2 + k + R, cy - R); x.lineTo(FW / 2 + k - R, cy + R); x.stroke();
+      }
+      x.restore();
+      x.lineWidth = 18; x.strokeStyle = "#e4b862"; x.beginPath(); x.arc(FW / 2, cy, R, 0, 6.28); x.stroke();
+      x.lineWidth = 3; x.strokeStyle = "#7a4b14"; x.beginPath(); x.arc(FW / 2, cy, R + 10, 0, 6.28); x.stroke();
+      x.restore();
+    }
+    x.fillStyle = "#f7efd9"; x.font = '62px "Rozha One", Georgia, serif';
+    x.fillText(u < 2.4 ? "First, the moon." : "And then, me.", FW / 2, 930);
+    if(u > 2.8){ x.save(); x.globalAlpha *= clamp(u - 2.8); x.fillStyle = "#f5a623"; x.font = '40px "Kalam", cursive'; x.fillText("Same as every year.", FW / 2, 1000); x.restore(); }
+  },
+  two(x, u, d, A){
+    const slide = (1 - easeOut(u / 1.1)) * 260;
+    circleImg(x, A.him, 200 + (slide ? -slide * .3 : 0), 520, 150);
+    x.save(); x.globalAlpha *= clamp(u / .8); circleImg(x, A.her, 520 + slide, 520, 150); x.restore();
+    x.fillStyle = "#c2183f"; heartPath(x, FW / 2, 525, 18);
+    x.fillStyle = "#f5a623"; x.font = '700 42px "Kalam", cursive';
+    x.fillText(FROM, 200, 735); x.fillText(NAME, 520, 735);
+    x.save(); x.globalAlpha *= clamp((u - 1) / .8);
+    x.fillStyle = "#f7efd9"; fitText(x, "The only two moons I need", FW / 2, 900, 62, '"Rozha One", Georgia, serif', 650);
+    x.restore();
+  },
+  photos(x, u, d, A){
+    const per = d / A.photos.length, i = Math.min(A.photos.length - 1, Math.floor(u / per)), v = u - i * per;
+    let a = clamp(v / .35); if(i < A.photos.length - 1) a *= clamp((per - v) / .35);
+    x.fillStyle = "#bdb1dc"; x.font = '28px "Marcellus", Georgia, serif'; x.fillText("U S", FW / 2, 165);
+    x.save(); x.globalAlpha *= a; x.translate(FW / 2, 650); x.rotate((i % 2 ? 1 : -1) * .045);
+    x.shadowColor = "rgba(0,0,0,.55)"; x.shadowBlur = 40; x.shadowOffsetY = 16;
+    x.fillStyle = "#fffaf0"; x.fillRect(-280, -400, 560, 760);
+    x.shadowColor = "transparent";
+    x.save(); x.beginPath(); x.rect(-256, -376, 512, 620); x.clip(); drawCover(x, A.photos[i], -256, -376, 512, 620, 1 + .07 * v / per); x.restore();
+    x.fillStyle = "#3a1810"; fitText(x, CAPTIONS[i] || "", 0, 315, 42, '"Kalam", cursive', 500);
+    x.restore();
+  },
+  family(x, u, d, A){
+    let ty = 960;
+    if(A.group){
+      const X = 120, Y = 150, w = 480, h = 620, r = w / 2;
+      x.save(); x.shadowColor = "rgba(245,166,35,.45)"; x.shadowBlur = 60;
+      x.beginPath(); x.moveTo(X, Y + r); x.arc(X + r, Y + r, r, Math.PI, 0); x.lineTo(X + w, Y + h); x.lineTo(X, Y + h); x.closePath();
+      x.fillStyle = "#1a1240"; x.fill(); x.restore();
+      x.save(); x.clip(); drawCover(x, A.group, X, Y, w, h, 1.06 - .06 * clamp(u / d)); x.restore();
+      x.lineWidth = 8; x.strokeStyle = "#e4b862"; x.stroke();
+    } else ty = 640;
+    x.fillStyle = "#f5a623"; fitText(x, "एक चाँद, एक परिवार", FW / 2, ty - 90 + (A.group ? 0 : 0), 62, '"Rozha One", Georgia, serif', 640);
+    const n = A.fam.length, gap = Math.min(130, 600 / Math.max(n, 1)), r0 = Math.min(48, gap * .38);
+    A.fam.forEach((img, i) => {
+      x.save(); x.globalAlpha *= clamp((u - .8 - i * .35) / .5);
+      circleImg(x, img, FW / 2 + (i - (n - 1) / 2) * gap, ty + 60, r0);
+      x.fillStyle = "#e4b862"; x.font = '26px "Marcellus", Georgia, serif';
+      x.fillText(A.famNames[i], FW / 2 + (i - (n - 1) / 2) * gap, ty + 60 + r0 + 40);
+      x.restore();
+    });
+  },
+  final(x, u){
+    for(const p of FPETALS){
+      const py = p.off + u * p.v * 260; if(py < -30 || py > FH + 30) continue;
+      x.save(); x.translate(p.x + Math.sin(u * 2 + p.ph) * 22, py); x.rotate(u * 1.5 + p.ph);
+      x.scale(1, .5 + .5 * Math.abs(Math.sin(u * 3 + p.ph)));
+      x.fillStyle = p.c; x.beginPath(); x.ellipse(0, 0, p.s, p.s * .6, 0, 0, 6.28); x.fill(); x.restore();
+    }
+    x.fillStyle = "#f5a623"; fitText(x, "हर जनम तुम्हारा", FW / 2, 500, 86, '"Rozha One", Georgia, serif', 650);
+    x.fillStyle = "#f7efd9"; x.font = '56px "Rozha One", Georgia, serif'; x.fillText("Happy Karwa Chauth,", FW / 2, 630);
+    fitText(x, NAME, FW / 2, 720, 74, '"Rozha One", Georgia, serif', 640);
+    x.save(); x.globalAlpha *= clamp((u - 1.8) / .8);
+    x.fillStyle = "#e4b862"; x.font = '700 48px "Kalam", cursive'; x.fillText(`Love, ${FROM}`, FW / 2, 870);
+    x.restore();
+  }
+};
+function filmDiyas(x, t){
+  for(let i = 0; i < 5; i++){
+    const dx = 90 + i * 135, dy = 1215, f = 1 + Math.sin(t * 9 + i * 1.7) * .08;
+    const gl = x.createRadialGradient(dx, dy - 20, 0, dx, dy - 20, 90);
+    gl.addColorStop(0, "rgba(255,170,60,.3)"); gl.addColorStop(1, "rgba(255,170,60,0)");
+    x.fillStyle = gl; x.fillRect(dx - 90, dy - 110, 180, 180);
+    const bw = x.createLinearGradient(0, dy, 0, dy + 22); bw.addColorStop(0, "#d0701f"); bw.addColorStop(1, "#7a3410");
+    x.fillStyle = bw; x.beginPath(); x.ellipse(dx, dy, 42, 22, 0, 0, Math.PI); x.fill();
+    const fl = x.createRadialGradient(dx, dy - 12, 2, dx, dy - 16, 18);
+    fl.addColorStop(0, "#fff6c8"); fl.addColorStop(.45, "#ffc23a"); fl.addColorStop(1, "#ff6a00");
+    x.fillStyle = fl; x.beginPath(); x.moveTo(dx, dy - 40 * f);
+    x.bezierCurveTo(dx + 12, dy - 22, dx + 10, dy - 5, dx, dy - 3);
+    x.bezierCurveTo(dx - 10, dy - 5, dx - 12, dy - 22, dx, dy - 40 * f); x.fill();
+  }
+}
+function filmPlan(A){
+  const segs = []; let t = 0;
+  const add = (name, d) => { segs.push({name, s: t, e: t + d}); t += d; };
+  add("title", 3.5); add("day", 3.8); add("moon", 5);
+  if(A.her) add("two", 4);
+  if(A.photos.length) add("photos", A.photos.length * 2.3);
+  if(A.group || A.fam.length) add("family", 5.5);
+  add("final", 6.5);
+  return {segs, total: t + .6};
+}
+function drawFilm(x, t, A, plan){
+  const g = x.createLinearGradient(0, 0, 0, FH);
+  g.addColorStop(0, "#0b0922"); g.addColorStop(.7, "#1a1240"); g.addColorStop(1, "#2c1850");
+  x.globalAlpha = 1; x.fillStyle = g; x.fillRect(0, 0, FW, FH);
+  for(const s of FSTARS){ x.globalAlpha = .35 + .65 * Math.abs(Math.sin(s.p + t * s.s)); x.fillStyle = "#fff"; x.beginPath(); x.arc(s.x, s.y, s.r, 0, 6.28); x.fill(); }
+  x.globalAlpha = 1; x.textAlign = "center"; x.textBaseline = "alphabetic";
+  for(const sg of plan.segs){
+    if(t < sg.s || t > sg.e + .6) continue;
+    const u = t - sg.s;
+    let a = sg.s === 0 ? clamp(u / 1) : clamp(u / .6);
+    if(t > sg.e && sg.name !== "final") a *= 1 - (t - sg.e) / .6;
+    x.save(); x.globalAlpha = a; FILM[sg.name](x, u, sg.e - sg.s, A); x.restore();
+  }
+  filmDiyas(x, t);
+  const end = clamp((t - (plan.total - 1.4)) / 1.2);
+  if(end > 0){ x.globalAlpha = end; x.fillStyle = "#000"; x.fillRect(0, 0, FW, FH); x.globalAlpha = 1; }
+}
+async function filmAssets(){
+  const fams = FAMILY.filter(m => m.photo);
+  const [him, her, photos, fam, group] = await Promise.all([
+    loadImg(MOON || PHOTOS[0]),
+    selfie ? loadImg(selfie) : null,
+    Promise.all(PHOTOS.map(loadImg)),
+    Promise.all(fams.map(m => loadImg(m.photo))),
+    FAMILY_GROUP ? loadImg(FAMILY_GROUP) : null
+  ]);
+  return {him, her, photos, fam, famNames: fams.map(m => m.name), group};
+}
+function pickMime(){
+  if(!window.MediaRecorder || !MediaRecorder.isTypeSupported) return "";
+  return ["video/mp4;codecs=avc1.42E01E,mp4a.40.2", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"].find(m => MediaRecorder.isTypeSupported(m)) || "";
+}
+const filmName = () => `${NAME}-${FROM}-karwa-chauth-2026.${(filmBlob && filmBlob.type.includes("mp4")) ? "mp4" : "webm"}`.toLowerCase().replace(/\s+/g, "-");
+async function makeFilm(){
+  if(filmBusy) return; filmBusy = true;
+  const ov = $("#film"), cv = $("#filmCanvas"), vid = $("#filmVideo"), msg = $("#filmMsg"), bar = $("#filmProg");
+  ov.hidden = false; cv.hidden = false; vid.hidden = true; $("#filmActions").hidden = true; bar.style.width = "0%";
+  msg.textContent = "Making your film. Keep this screen open, it takes about 40 seconds.";
+  const x = cv.getContext("2d");
+  try{ await Promise.all(['64px "Rozha One"', '700 50px "Kalam"', '40px "Kalam"', '30px "Marcellus"'].map(f => document.fonts.load(f))); }catch(e){}
+  let A;
+  try{ A = await filmAssets(); }catch(e){ msg.textContent = "Some pictures didn't load. Close this and try again."; $("#filmActions").hidden = false; filmBusy = false; return; }
+  const plan = filmPlan(A);
+  let rec = null, chunks = [], lock = null;
+  try{ audio(); startDrone(); }catch(e){}
+  const mime = pickMime();
+  if(mime && cv.captureStream){
+    try{
+      const tracks = [...cv.captureStream(30).getVideoTracks(), ...(recDest ? recDest.stream.getAudioTracks() : [])];
+      rec = new MediaRecorder(new MediaStream(tracks), {mimeType: mime, videoBitsPerSecond: 4_000_000});
+      rec.ondataavailable = e => { if(e.data && e.data.size) chunks.push(e.data); };
+      rec.start(250);
+    }catch(e){ rec = null; }
+  }
+  if(!rec) msg.textContent = "This browser can't save videos, so just enjoy watching it. Try Chrome or Safari to save one.";
+  try{ lock = await navigator.wakeLock?.request("screen"); }catch(e){}
+  const NOTES = [523, 587, 659, 784, 880, 988, 1047];
+  let lastSeg = -1;
+  await new Promise(done => {
+    const t0 = performance.now();
+    const step = now => {
+      const t = (now - t0) / 1000;
+      drawFilm(x, t, A, plan);
+      bar.style.width = Math.min(100, t / plan.total * 100) + "%";
+      const si = plan.segs.findIndex(sg => t >= sg.s && t < sg.e);
+      if(si !== -1 && si !== lastSeg){ lastSeg = si; bell(NOTES[si % NOTES.length], .14); if(plan.segs[si].name === "final"){ setTimeout(() => bell(659, .12), 250); setTimeout(() => bell(784, .12), 500); } }
+      if(t < plan.total) requestAnimationFrame(step); else done();
+    };
+    requestAnimationFrame(step);
+  });
+  try{ lock && lock.release(); }catch(e){}
+  if(rec){
+    await new Promise(r => { rec.onstop = r; setTimeout(() => rec.stop(), 300); });
+    filmBlob = new Blob(chunks, {type: (rec.mimeType || mime).split(";")[0]});
+    if(filmURL) URL.revokeObjectURL(filmURL);
+    filmURL = URL.createObjectURL(filmBlob);
+    vid.src = filmURL; vid.hidden = false; cv.hidden = true;
+    msg.textContent = "Your film is ready. Save it, or send it to me.";
+    $("#b-film-share").hidden = false; $("#b-film-save").hidden = false;
+  } else {
+    $("#b-film-share").hidden = true; $("#b-film-save").hidden = true;
+  }
+  $("#filmActions").hidden = false;
+  filmBusy = false;
+}
+function saveFilm(){
+  if(!filmURL) return;
+  const a = document.createElement("a"); a.href = filmURL; a.download = filmName();
+  document.body.appendChild(a); a.click(); a.remove();
+}
+$("#b-film").addEventListener("click", makeFilm);
+$("#b-film-save").addEventListener("click", saveFilm);
+$("#b-film-share").addEventListener("click", async () => {
+  if(!filmBlob) return;
+  const file = new File([filmBlob], filmName(), {type: filmBlob.type});
+  try{
+    if(navigator.canShare && navigator.canShare({files: [file]})){ await navigator.share({files: [file], text: "Our Karwa Chauth 🌙"}); return; }
+  }catch(e){ if(e.name === "AbortError") return; }
+  saveFilm();
+});
+$("#b-film-again").addEventListener("click", makeFilm);
+$("#b-film-close").addEventListener("click", () => { const v = $("#filmVideo"); v.pause(); $("#film").hidden = true; });
+
 /* 10. finale */
 enter["s-final"] = () => {
   body.classList.remove("moon-hide", "small-moon");
@@ -1271,6 +1564,7 @@ $("#b-petals").addEventListener("click", () => {
   for(let k = 0; k < 3; k++) later(() => sparks(W * (.15 + Math.random() * .7), H * (.12 + Math.random() * .35), 50), k * 400);
 });
 $("#b-again").addEventListener("click", () => {
+  $("#film").hidden = true;
   timers.forEach(clearTimeout); timers = [];
   if(typing){ clearInterval(typing); typing = null; }
   locked = false; parts = []; stopCam(); selfie = null;
